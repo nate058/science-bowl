@@ -283,7 +283,7 @@ function paintSettings(){const r=RSET();document.querySelectorAll('#subjs input'
   document.querySelectorAll('#segType button').forEach(b=>b.classList.toggle('on',b.dataset.v===r.type));
   if(document.activeElement!==$('rate')){$('rate').value=r.rate;rv(r.rate)}
   if(document.activeElement!==$('win'))$('win').value=r.win;$('mans').value=r.mans;$('auto').checked=!!r.auto;
-  const n=matchQs(r).length;$('poolinfo').textContent=n?`${n} questions match these settings.${M.joined?' Anyone in the room can change them.':' Each one comes up once before any repeats.'}`:'No questions match. Pick at least one subject.'}
+  const n=matchQs(r).length;$('poolinfo').textContent=n?`${n} questions match these settings.${M.joined?' Anyone in the room can change them. No repeats within 100 questions.':' A question will not repeat until at least 100 others have been asked.'}`:'No questions match. Pick at least one subject.'}
 function renderLvls(){const cnt={};for(const s of SUBJ)for(const q of QS[s])cnt[q.lvl]=(cnt[q.lvl]||0)+1;$('lvls').innerHTML='';
   for(const l of LVLS){const el=document.createElement('label');el.className='chk';el.innerHTML=`<input type="checkbox" data-l="${l}">${LVLNAME[l]}<span class="n">${cnt[l]||0}</span>`;
     el.querySelector('input').onchange=e=>{const cur=RSET().lvls||LVLS;const next=e.target.checked?LVLS.filter(x=>x===l||cur.includes(x)):cur.filter(x=>x!==l);if(!next.length){e.target.checked=true;return}setSetting({lvls:next})};$('lvls').appendChild(el)}}
@@ -307,7 +307,16 @@ $('voice').onchange=e=>{S.voice=e.target.value;saveS()};
 let pool=[],pi=0;
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a}
 function buildPool(){pool=shuffle(matchQs(S));pi=0}
-function drawQ(){if(!pool.length)buildPool();if(!pool.length)return null;if(pi>=pool.length){shuffle(pool);pi=0}return pool[pi++]}
+const RECENT_N=100;
+// Walk the shuffled pool, skipping anything asked in the last RECENT_N questions.
+// If every match is recent (very narrow filters), fall back to the one asked longest ago.
+function pickFresh(P,st,recent){if(!P.length)return null;const rs=new Set(recent);
+  for(let t=0;t<P.length;t++){if(st.pi>=P.length){shuffle(P);st.pi=0}const q=P[st.pi++];if(!rs.has(q.id))return q}
+  const ids=new Set(P.map(q=>q.id));const old=recent.find(id=>ids.has(id));return QBYID[old]||P[0]}
+function remember(recent,id){const i=recent.indexOf(id);if(i>=0)recent.splice(i,1);recent.push(id);if(recent.length>RECENT_N)recent.splice(0,recent.length-RECENT_N)}
+let soloRecent=store.get('sbr-recent',[]);if(!Array.isArray(soloRecent))soloRecent=[];
+const soloSt={get pi(){return pi},set pi(v){pi=v}};
+function drawQ(){if(!pool.length)buildPool();const q=pickFresh(pool,soloSt,soloRecent);if(q){remember(soloRecent,q.id);store.set('sbr-recent',soloRecent)}return q}
 
 // ================= reader (shared) =================
 let keepU=[];
@@ -489,18 +498,18 @@ const active=()=>H.order.filter(i=>H.players[i]&&H.players[i].on&&!H.locked.incl
 const allDone=()=>active().every(i=>H.players[i].done);
 function apply(a,s){const p=H.players[a.id];if(!p)return;if(a.ok){p.score+=4*s;p.c+=s}else{p.w+=s;if(a.intr)p.score-=4*s}}
 function hPool(){H.pool=shuffle(matchQs(H.set));H.pi=0}
-function hDraw(){if(!H.pool.length)hPool();if(!H.pool.length)return null;if(H.pi>=H.pool.length){shuffle(H.pool);H.pi=0}return H.pool[H.pi++]}
+function hDraw(){if(!H.pool.length)hPool();if(!Array.isArray(H.recent))H.recent=[];const q=pickFresh(H.pool,H,H.recent);if(q)remember(H.recent,q.id);return q}
 function hStart(){
   const s=M.st;H.conns={};clearInterval(H.tick);H.tick=setInterval(hTick,200);
   if(s&&s.players){ // taking over a room in progress
     H.players={};H.order=[];for(const p of s.players){H.players[p.id]={name:p.name,score:p.score,c:p.c,w:p.w,on:p.id===M.myId,done:true};H.order.push(p.id)}
     if(!H.players[M.myId]){H.players[M.myId]={name:M.name,score:0,c:0,w:0,on:true,done:true};H.order.push(M.myId)}
-    Object.assign(H,{set:Object.assign({lvls:LVLS.slice()},s.settings),q:s.q?QBYID[s.q.id]||null:null,qn:s.qn,qseq:s.qseq,rseq:s.rseq,bseq:0,buzz:null,locked:[],answers:s.answers||[],result:s.result,log:(s.log||[]).slice(),firstDone:0});
+    Object.assign(H,{set:Object.assign({lvls:LVLS.slice()},s.settings),q:s.q?QBYID[s.q.id]||null:null,qn:s.qn,qseq:s.qseq,rseq:s.rseq,bseq:0,buzz:null,locked:[],answers:s.answers||[],result:s.result,log:(s.log||[]).slice(),firstDone:0,recent:Array.isArray(s.recent)?s.recent.slice(-RECENT_N):[]});
     hPool();hLog(`${M.name}'s tab took over the room`);
     if(H.q&&s.phase!=='lobby'&&s.phase!=='result')hEnd();else{H.phase=H.q?'result':'lobby';H.autoAt=Date.now()+6000;hBroadcast()}
   }else{
     Object.assign(H,{players:{[M.myId]:{name:M.name,score:0,c:0,w:0,on:true,done:true}},order:[M.myId],
-      set:{subj:S.subj.slice(),lvls:S.lvls.slice(),type:S.type,rate:S.rate,win:S.win,mans:S.mans,auto:S.auto},phase:'lobby',q:null,qn:0,qseq:0,rseq:0,bseq:0,buzz:null,locked:[],answers:[],result:null,log:[],firstDone:0});
+      set:{subj:S.subj.slice(),lvls:S.lvls.slice(),type:S.type,rate:S.rate,win:S.win,mans:S.mans,auto:S.auto},phase:'lobby',q:null,qn:0,qseq:0,rseq:0,bseq:0,buzz:null,locked:[],answers:[],result:null,log:[],firstDone:0,recent:soloRecent.slice()});
     hPool();hLog(`${M.name} opened the room`);hBroadcast()}
 }
 function hAccept(conn){
@@ -570,7 +579,7 @@ function hPub(){const q=H.q,now=Date.now();return{t:'state',phase:H.phase,qseq:H
   msLeft:H.phase==='result'?(H.set.auto?Math.max(0,H.autoAt-now):0):Math.max(0,H.deadline-now),
   buzz:H.buzz,locked:H.locked,answers:H.answers,
   players:H.order.map(id=>({id,name:H.players[id].name,score:H.players[id].score,c:H.players[id].c,w:H.players[id].w,on:H.players[id].on})),
-  result:H.result,log:H.log.slice(-10)}}
+  result:H.result,log:H.log.slice(-10),recent:H.recent}}
 function hBroadcast(){if(!M.isHost||M.leaving)return;const s=hPub();for(const id in H.conns){const c=H.conns[id];if(c&&c.open){try{c.send(s)}catch(e){}}}onState(s)}
 
 // ================= MULTIPLAYER: every player's view =================
